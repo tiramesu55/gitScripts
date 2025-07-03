@@ -8,7 +8,7 @@ DECLARE
   v_local_tz VARCHAR;
   v_behind_utc VARCHAR;
   rows_inserted INTEGER;
-  V_DATA_TAG_ID integer
+  V_DATA_TAG_ID integer;
 BEGIN
 -- find data_tag_id by case_id
    select data_tag_id into :V_DATA_TAG_ID from E_SANDBOX.BRONZE.MARKETSCENARIO where CASEID = :CASE_ID limit 1;

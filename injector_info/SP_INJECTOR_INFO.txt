@@ -1,0 +1,128 @@
+-- ZONE_ID is not needed anymore, because zones are coming from ARA_ID table
+CREATE OR REPLACE PROCEDURE E_SANDBOX.SILVER.SP_INJECTOR_INFO(case_id INTEGER)
+RETURNS INTEGER
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rows_inserted INTEGER;
+    market_id integer;
+    scenario string;
+BEGIN
+--find the market for case
+  SELECT MARKETID, SCENARIO
+  INTO :market_id, :scenario
+  FROM E_SANDBOX.BRONZE.MARKETSCENARIO 
+  WHERE CASEID = :CASE_ID
+  LIMIT 1;
+    INSERT INTO E_SANDBOX.SILVER.INJ_INFO ( 
+        INJECTOR_ID, PLANT_ID, ZONE_ID, PLANT_NAME, INJECTOR, LONGNAME, ZONE,
+        UNIT_TYPE, CAPACITY_SUMMER, CAPACITY_WINTER, CAPACITY_NAMEPLATE,
+        PRIMARY_FUEL_TYPE, SECONDARY_FUEL_TYPE,
+        PRIMARY_FUEL_LOCATION, SECONDARY_FUEL_LOCATION, NON_FUEL_VOM,SNL_UNIT_ID,
+        SNL_PLANT_ID, COUNTY, STATE, LATITUDE, LONGITUDE,
+        MARKETID, ONLINEDATE,RETIREDATE, CAPEX_BUILT,CAPEX_RETIRED,SHORTNAME
+    )
+    --new records which are not in inj_info
+    WITH NEW_RECORDS AS (
+       SELECT * 
+    FROM (
+        SELECT
+            B.ONLINEDATE,
+            B.RETIREDATE,
+            CASE WHEN SUBSTR(B."//SHORTNAME",1,3) = 'CX_' THEN 1 ELSE 0 END AS CAPEX_BUILT,
+            CASE WHEN SUBSTR(B.RETIREDATE,1,2) = '06' THEN 1 ELSE 0 END AS CAPEX_RETIRED,
+            CASE WHEN SUBSTR(B."//SHORTNAME",1,3) = 'CX_' THEN B."//SHORTNAME" || :scenario ELSE B."//SHORTNAME" END AS INJECTOR,              
+            B.LONGNAME,
+            B.ENERGYAREA AS ZONE,
+            B.UNITTYPE AS UNIT_TYPE,
+            B.SUMMERCAP AS CAPACITY_SUMMER,
+            B.WINTERCAP AS CAPACITY_WINTER,
+            B.WINTERCAP AS CAPACITY_NAMEPLATE,
+            B.PRIMARYFUELTYPE AS PRIMARY_FUEL_TYPE,
+            B.SECONDARYFUELTYPE AS SECONDARY_FUEL_TYPE,
+            B.PRIMARYFUEL AS PRIMARY_FUEL_LOCATION,
+            B.SECONDARYFUEL AS SECONDARY_FUEL_LOCATION,
+            B.VOM AS NON_FUEL_VOM,
+            B.SNLUNITID AS SNL_UNIT_ID,
+            B.SNLPLANTID AS SNL_PLANT_ID,
+            B.COUNTY,
+            B.STATE,
+            B.LATITUDE,
+            B.LONGITUDE,
+            :market_id AS MARKETID,
+            B."//SHORTNAME" AS SHORTNAME,
+         
+           CASE
+                WHEN SUBSTR( B."//SHORTNAME", 1, 3) = 'CX_'   ---it is _CX injector
+                   THEN B."//SHORTNAME" || :scenario
+                ELSE
+                 CASE
+                  WHEN NULLIF( B.LONGNAME, '') IS  NULL  -- no LONGNAME and we can 
+                    THEN  B."//SHORTNAME"  --assume that shottname is not empty because longname is
+                  ELSE  
+                    TRIM(SPLIT_PART ( B.LONGNAME, '|', 1))
+                 END
+             
+            END AS PLANT_NAME,
+            ROW_NUMBER() OVER (PARTITION BY 
+                CASE WHEN SUBSTR(B."//SHORTNAME",1,3) = 'CX_' THEN B."//SHORTNAME" || :scenario ELSE B."//SHORTNAME" END
+                ORDER BY B.RETIREDATE DESC NULLS LAST
+            ) AS row_rank
+        FROM ENELYTIX.PSO3_1.INJECTOR_INFO B
+        LEFT JOIN E_SANDBOX.SILVER.INJ_INFO S      
+            ON (CASE WHEN SUBSTR(B."//SHORTNAME",1,3) = 'CX_' THEN B."//SHORTNAME" || :scenario ELSE B."//SHORTNAME" END) = S.INJECTOR
+        WHERE S.INJECTOR IS NULL
+          AND B.CASEID = :case_id
+          AND B.UnitType in ('PV','Wind','PSH','Offshore Wind','Hydro','ST','IC/GT','CC','Coal','NUC','FC','ES')
+          AND substr(B."//shortname",1,6) != 'zzAgg_'
+    )
+    QUALIFY row_rank = 1
+
+)
+    
+--  FINAL_INSERT AS (
+        SELECT
+            (SELECT COALESCE(MAX(INJECTOR_ID), 0) FROM E_SANDBOX.SILVER.INJ_INFO)
+                + ROW_NUMBER() OVER (ORDER BY NR.INJECTOR) AS INJECTOR_ID,
+            PIM.PLANT_ID,
+            ZIM.ZONE_ID,
+            NR.PLANT_NAME,
+            NR.INJECTOR,
+            NR.LONGNAME,
+            NR.ZONE,
+            NR.UNIT_TYPE,
+            NR.CAPACITY_SUMMER,
+            NR.CAPACITY_WINTER,
+            NR.CAPACITY_NAMEPLATE,
+            NR.PRIMARY_FUEL_TYPE,
+            NR.SECONDARY_FUEL_TYPE,
+            NR.PRIMARY_FUEL_LOCATION,
+            NR.SECONDARY_FUEL_LOCATION,    
+            NR.NON_FUEL_VOM,
+            NR.SNL_UNIT_ID,
+            NR.SNL_PLANT_ID,  
+            NR.COUNTY,
+            NR.STATE,
+            NR.LATITUDE,
+            NR.LONGITUDE,
+            NR.MARKETID, 
+            --NR.SCENARIO,
+            NR.ONLINEDATE,
+            NR.RETIREDATE, 
+            NR.CAPEX_BUILT,
+            NR.CAPEX_RETIRED,
+            NR.SHORTNAME
+        FROM NEW_RECORDS NR
+        INNER JOIN E_SANDBOX.MODEL_DATA.ZONE_ID ZIM ON NR.ZONE = ZIM.ZONE
+        INNER JOIN E_SANDBOX.MODEL_DATA.PLANT_ID PIM ON NR.PLANT_NAME = PIM.PLANT;
+--   )
+--   SELECT *
+--   FROM FINAL_INSERT;
+    rows_inserted := SQLROWCOUNT;
+    RETURN rows_inserted;
+END;
+$$;
+
+ --call E_SANDBOX.SILVER.SP_INJECTOR_INFO(30295)
