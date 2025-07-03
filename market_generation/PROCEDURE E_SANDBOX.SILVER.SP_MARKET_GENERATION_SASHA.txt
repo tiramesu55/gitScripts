@@ -1,0 +1,144 @@
+-- create or replace TABLE E_SANDBOX.BRONZE.MARKET_GENERATION_SASHA (
+-- 	DATA_TAG_ID NUMBER(38,0),
+-- 	PERIOD VARCHAR(50),
+-- 	DT_ENELYTIX VARCHAR(60),
+-- 	ZONE VARCHAR(100),
+-- 	UNIT_TYPE VARCHAR(50) NOT NULL,
+-- 	GENERATION FLOAT,
+-- 	EMS_CO2 FLOAT,
+-- 	EMS_NOX FLOAT,
+-- 	EMS_SO2 FLOAT,
+-- 	CAPACITY FLOAT,
+-- 	CAP FLOAT,
+--  MAX FLOAT,
+--    LOCAL_TZ VARCHAR(60)
+-- );
+
+
+
+CREATE OR REPLACE PROCEDURE E_SANDBOX.SILVER.SP_MARKET_GENERATION_SASHA(  DATA_TAG_ID INTEGER)
+RETURNS INTEGER
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+  v_local_tz VARCHAR;
+  rows_inserted INTEGER;
+BEGIN
+  -- Assign values from query into variables
+  SELECT  LOCAL_TZ
+    INTO  :v_local_tz
+    FROM E_SANDBOX.SILVER.DATA_TAG_KEY
+   WHERE DATA_TAG_ID = :DATA_TAG_ID 
+   LIMIT 1;
+
+insert into E_SANDBOX.BRONZE.MARKET_GENERATION_SASHA
+SELECT
+    :data_tag_id ,
+    main_query.Period AS PERIOD,
+    main_query.dt as DT_ENELYTIX,
+    main_query.EnergyArea as ZONE,
+    main_query.UnitType AS UNIT_TYPE,
+    SUM(main_query.gen) AS GENERATION,
+	SUM(EM_Uth_CO2.co2_emissions_lbs) / 2204.62 AS EMS_CO2,
+	SUM(EM_Uth_NOX.nox_emissions_lbs) / 2204.62 AS EMS_NOX,
+	SUM(EM_Uth_SO2.so2_emissions_lbs) / 2204.62 AS EMS_SO2,
+    SUM(main_query.CAPACITY) AS  CAPACITY,  
+    SUM(CAP) as CAP,
+    SUM(MAX) as MAX,
+    -- COUNT(*) AS record_count
+    :v_local_tz
+
+FROM 
+    (SELECT 
+        ED_Inj.inj AS pCloudName,
+		Injector_Info.UnitType,
+		Injector_Info.EnergyArea,
+        Injector_Info.WINTERCAP as CAPACITY,
+        REPLACE(CONCAT(ED_Inj.Dt, ':00'), '.', '-') AS dt,
+        ED_Inj.P AS gen,
+		ED_Inj.Period,  -- Select Period here
+	    ED_Inj.CAP,
+        ED_Inj.MAX
+    FROM 
+        ENELYTIX.PSO3_1.ED_Inj AS ED_Inj
+    INNER JOIN 
+        (SELECT DISTINCT "//ShortName", EnergyArea, State, CaseId, UnitType, WINTERCAP
+         FROM ENELYTIX.PSO3_1.Injector_Info
+        -- WHERE UnitType in ('PV','Wind','PSH','Offshore Wind','Hydro','ST','IC/GT','CC','Coal','NUC','FC','ES') 
+	     --and substr("//SHORTNAME",1,6) != 'zzAgg_'
+         ) AS Injector_Info
+    ON 
+        TRIM(ED_Inj.inj) = TRIM(Injector_Info."//ShortName")
+        AND ED_Inj.CaseId = Injector_Info.CaseId
+   
+    WHERE 
+        ED_Inj.scn = 'RT'
+        AND ED_Inj.CaseId IN (SELECT caseID FROM E_SANDBOX.BRONZE.MARKETSCENARIO WHERE DATA_TAG_ID= :DATA_TAG_ID  )) AS main_query
+		
+-- add CO2
+LEFT JOIN 
+    (SELECT 
+        EM_Uth.uth AS pCloudName,
+        REPLACE(CONCAT(EM_Uth.Dt, ':00'), '.', '-') AS dt,
+        EM_Uth.Emission AS co2_emissions_lbs
+    FROM 
+        ENELYTIX.PSO3_1.EM_Uth as EM_Uth
+    WHERE 
+        EM_Uth.scn = 'RT'
+        AND EM_Uth.ems = 'CO2'
+        AND EM_Uth.CaseId IN (SELECT caseID FROM E_SANDBOX.BRONZE.MARKETSCENARIO WHERE DATA_TAG_ID= :DATA_TAG_ID  )) AS EM_Uth_CO2
+ON 
+    main_query.pCloudName = EM_Uth_CO2.pCloudName
+    AND main_query.dt = EM_Uth_CO2.dt
+	
+-- add NOX
+LEFT JOIN 
+    (SELECT 
+        EM_Uth.uth AS pCloudName,
+        REPLACE(CONCAT(EM_Uth.Dt, ':00'), '.', '-') AS dt,
+        EM_Uth.Emission AS nox_emissions_lbs
+    FROM 
+        ENELYTIX.PSO3_1.EM_Uth
+    WHERE 
+        EM_Uth.scn = 'RT'
+        AND EM_Uth.ems = 'NOX'
+        AND EM_Uth.CaseId IN (SELECT caseID FROM E_SANDBOX.BRONZE.MARKETSCENARIO WHERE DATA_TAG_ID= :DATA_TAG_ID )) AS EM_Uth_NOX
+ON 
+    main_query.pCloudName = EM_Uth_NOX.pCloudName
+    AND main_query.dt = EM_Uth_NOX.dt
+-- add SO2
+LEFT JOIN 
+    (SELECT 
+        EM_Uth.uth AS pCloudName,
+        REPLACE(CONCAT(EM_Uth.Dt, ':00'), '.', '-') AS dt,
+        EM_Uth.Emission AS so2_emissions_lbs
+    FROM 
+        ENELYTIX.PSO3_1.EM_Uth
+    WHERE 
+        EM_Uth.scn = 'RT'
+        AND EM_Uth.ems = 'SO2'
+        AND EM_Uth.CaseId IN (SELECT caseID FROM E_SANDBOX.BRONZE.MARKETSCENARIO WHERE DATA_TAG_ID= :DATA_TAG_ID )) AS EM_Uth_SO2
+ON 
+    main_query.pCloudName = EM_Uth_SO2.pCloudName
+    AND main_query.dt = EM_Uth_SO2.dt
+WHERE
+	main_query.UnitType NOT IN ('DCgen','DCload','Interchange')
+
+GROUP BY 
+    main_query.UnitType, 
+    main_query.dt,
+	main_query.Period,
+	main_query.EnergyArea;
+
+    rows_inserted := SQLROWCOUNT;
+
+    RETURN  rows_inserted;
+  
+END;
+$$;
+
+--CALL E_SANDBOX.SILVER.SP_MARKET_GENERATION_SASHA( 6);
+--delete from E_SANDBOX.BRONZE.MARKET_GENERATION_SASHA WHERE  DATA_TAG_ID=6
+
