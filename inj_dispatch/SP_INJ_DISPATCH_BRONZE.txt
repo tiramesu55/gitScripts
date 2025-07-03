@@ -1,0 +1,490 @@
+--DROP PROCEDURE IF EXISTS E_SANDBOX.SILVER.SP_MY_PROC(INTEGER, VARCHAR);
+CREATE OR REPLACE PROCEDURE E_SANDBOX.SILVER.SP_INJ_DISPATCH_BRONZE(case_id INTEGER)
+RETURNS INTEGER
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+
+DECLARE
+    rows_inserted INTEGER;
+    --v_scenario VARCHAR;
+BEGIN
+-- --find the scenario for CX injectors
+--   SELECT SCENARIO fLEFT
+--   INTO :v_scenario
+--   FROM E_SANDBOX.BRONZE.MARKETSCENARIO
+--   WHERE CASEID = :CASE_ID
+--   LIMIT 1;
+   
+
+INSERT INTO  E_SANDBOX.BRONZE.INJ_DISPATCH (
+	CYCLE ,
+	INJECTOR ,
+	DT_ENELYTIX ,
+	PERIOD ,
+	LMP ,
+	LMP_ENERGY ,
+	LMP_CONGESTION ,
+	LMP_LOSS ,
+	MER ,
+	GENERATION ,
+	MAX_MW ,
+	CURTAILMENT ,
+	CARBON_DISPLACEMENT ,
+	TOTAL_COST ,
+	VOM_COST ,
+	FUEL_COST ,
+	EMISSIONS_COST ,
+	SUBSIDY ,
+	REC_REVENUE ,
+	ANCILLARY_SERVICES_REVENUE ,
+	BIOMASS ,
+	COAL ,
+	FUEL_OIL ,
+	NATURAL_GAS ,
+	REFUSE ,
+	URANIUM ,
+	BIOMASS_COST ,
+	COAL_COST ,
+	FUEL_OIL_COST ,
+	NATURAL_GAS_COST ,
+	REFUSE_COST ,
+	URANIUM_COST ,
+	EMS_CO2 ,
+	EMS_NOX ,
+	EMS_SO2 ,
+	COST_CO2 ,
+	COST_NOX ,
+	COST_SO2 ,
+	REGUP ,
+	REGDOWN ,
+	SPIN ,
+	SUPP ,
+	NONSPIN ,
+	RAMPUP ,
+	RAMPDOWN,
+	REGUP_REVENUE ,
+	REGDOWN_REVENUE ,
+	SPIN_REVENUE ,
+	SUPP_REVENUE ,
+	NONSPIN_REVENUE ,
+	RAMPUP_REVENUE ,
+	RAMPDOWN_REVENUE ,
+    CAP,
+	CASE_ID 
+)
+
+with 
+LMP_table as (
+SELECT
+       int,
+       inj,
+        SUM(CASE WHEN scn = 'RT' THEN LMP END
+            )AS "RT",
+        SUM(CASE WHEN scn = 'RT_MER+' THEN LMP END
+			)AS "RT_MER+",
+        SUM(CASE WHEN scn = 'RT_MER-' THEN LMP END
+			)AS "RT_MER-"
+FROM 
+	ENELYTIX.PSO3_1.ED_inj
+Where CASEID = :case_id
+GROUP BY
+       int,
+       inj)
+,
+MER_table as(
+Select int,
+	   inj,
+       "MER_RT_MER+",
+       "MER_RT_MER-",
+       "MER_RT_MER+-",
+			case
+				when "MER_min_abs" > 10 then null
+				when abs("MER_RT_MER+") <= 10 and abs("MER_RT_MER+") = "MER_min_abs" then "MER_RT_MER+"
+				when abs("MER_RT_MER-") <= 10 and abs("MER_RT_MER-") = "MER_min_abs" then "MER_RT_MER-"
+				when abs("MER_RT_MER+-") <= 10 and abs("MER_RT_MER+-") = "MER_min_abs" then "MER_RT_MER+-"
+			end
+		as "MER"
+From (
+	Select int,			 
+		 inj,
+		 ("RT_MER+" - "RT")/0.01 as "MER_RT_MER+",
+		 ("RT_MER-" - "RT")/(-0.01) as "MER_RT_MER-",
+		 ("RT_MER+" - "RT_MER-")/(0.01*2) as "MER_RT_MER+-",
+		 least(abs(("RT_MER+" - "RT")/0.01), 
+			   abs(("RT_MER-" - "RT")/0.01), 
+			   abs(("RT_MER+" - "RT_MER-")/(0.01*2))) 
+		 as "MER_min_abs"
+	From LMP_table) as t1
+)
+,
+MER_ffilled_table as (
+Select int,
+       inj,
+       COALESCE (max("MER") over(partition by inj, grouper), 0.5) as "MER_ffill"
+From (
+Select  
+    int,
+	inj,
+	"MER",
+    count("MER") over(partition by inj order by int) as "grouper"
+From MER_table ) as t2
+)
+
+SELECT
+	Ed_inj.scn as "CYCLE",
+    CASE WHEN SUBSTR(Ed_inj.inj,1,3) = 'CX_'
+			  THEN Ed_inj.inj|| ':v_scenario'
+               ELSE  Ed_inj.inj
+	END AS INJECTOR,
+	concat(replace(ED_inj.dt, '.', '-'), ':00') as "DT_ENELYTIX",
+	Ed_inj.Period as "PERIOD",
+	Ed_inj.LMP as "LMP",
+	null as "LMP_ENERGY",
+	null as "LMP_CONGESTION",
+	null as "LMP_LOSS",
+	MER_ffilled_table.MER_ffill as "MER",
+	Ed_inj.P as "GENERATION",
+	Ed_inj.Max as "MAX_MW",
+	Ed_inj.Max - Ed_inj.P as "CURTAILMENT",
+        Ed_inj.P * MER_ffilled_table.MER_ffill- COALESCE(EM_Uth.EMS_CO2 / 2204.62, 0) as CARBON_DISPLACEMENT,
+	Ed_inj.CostTotal as TOTAL_COST,
+	COALESCE(Ed_inj.P * Injector_info.VOM,0) as VOM_COST,
+	( COALESCE(FD_Ufu_cost.BIOMASS_COST,0) + 
+		COALESCE(FD_Ufu_cost.COAL_COST,0) +
+		COALESCE(FD_Ufu_cost.FUEL_OIL_COST,0) +
+		COALESCE(FD_Ufu_cost.NATURAL_GAS_COST,0) +
+		COALESCE(FD_Ufu_cost.REFUSE_COST,0) +
+		COALESCE(FD_Ufu_cost.URANIUM_COST,0) )
+	as FUEL_COST,
+    
+		(COALESCE(EM_Uth_Cost.COST_CO2,0) +
+		COALESCE(EM_Uth_Cost.COST_NOX,0) + 
+		COALESCE( EM_Uth_Cost.COST_SO2,0) )
+	as EMISSIONS_COST,
+    
+	COALESCE(Ed_inj.CostofEnergy,0) + COALESCE (Ed_inj.P * Injector_info.VOM,0) as SUBSIDY,
+	Ed_inj.CostofAdder as REC_REVENUE,
+    
+	(COALESCE(RS_inj_rev.REGUP_REVENUE,0) +
+		COALESCE(RS_inj_rev.REGDOWN_REVENUE,0) +
+		COALESCE(RS_inj_rev.SPIN_REVENUE,0) +
+		COALESCE(RS_inj_rev.SUPP_REVENUE,0) +
+		COALESCE(RS_inj_rev.NONSPIN_REVENUE,0) +
+		COALESCE(RS_inj_rev.RAMPUP_REVENUE,0) +
+		COALESCE(RS_inj_rev.RAMPDOWN_REVENUE,0))
+	as ANCILLARY_SERVICES_REVENUE,
+    
+	COALESCE(FD_Ufu.BIOMASS,0) as BIOMASS,
+	COALESCE(FD_Ufu.COAL,0) as COAL,
+	COALESCE(FD_Ufu.FUEL_OIL,0) as FUEL_OIL,
+	COALESCE(FD_Ufu.NATURAL_GAS,0) as NATURAL_GAS,
+	COALESCE(FD_Ufu.REFUSE,0) as REFUSE,
+	COALESCE(FD_Ufu.URANIUM,0) as URANIUM,
+	COALESCE(FD_Ufu_cost.BIOMASS_COST,0)as BIOMASS_COST,
+	COALESCE(FD_Ufu_cost.COAL_COST,0) as COAL_COST,
+	COALESCE(FD_Ufu_cost.FUEL_OIL_COST,0) as FUEL_OIL_COST,
+	COALESCE(FD_Ufu_cost.NATURAL_GAS_COST,0) as NATURAL_GAS_COST,
+	COALESCE(FD_Ufu_cost.REFUSE_COST,0) as REFUSE_COST,
+	COALESCE(FD_Ufu_cost.URANIUM_COST,0) as URANIUM_COST  ,
+    
+	
+        COALESCE(EM_Uth.EMS_CO2/2204.62, 0) AS EMS_CO2,
+        COALESCE(EM_Uth.EMS_NOX/2204.62, 0) AS EMS_NOX,
+        COALESCE(EM_Uth.EMS_SO2/2204.62, 0) AS EMS_SO2,
+	 COALESCE(EM_Uth_Cost.COST_CO2,0),
+	 COALESCE(EM_Uth_Cost.COST_NOX,0),
+	 COALESCE(EM_Uth_Cost.COST_SO2,0),
+    
+	COALESCE(RS_inj.REGUP,0) as REGUP,
+	COALESCE(RS_inj.REGDOWN,0) AS REGDOWN,
+	COALESCE(RS_inj.SPIN,0) AS SPIN,
+	COALESCE(RS_inj.SUPP,0) AS SUPP,
+	COALESCE(RS_inj.NONSPIN,0) AS NONSPIN,
+	COALESCE(RS_inj.RAMPUP,0) AS RAMPUP,
+	COALESCE(RS_inj.RAMPDOWN,0) AS RAMPDOWN,
+	COALESCE( RS_inj_rev.REGUP_REVENUE,0) AS REGUP_REVENUE,
+	COALESCE( RS_inj_rev.REGDOWN_REVENUE,0) AS REGDOWN_REVENUE,
+	COALESCE( RS_inj_rev.SPIN_REVENUE,0) as SPIN_REVENUE ,
+	COALESCE( RS_inj_rev.SUPP_REVENUE,0) as SUPP_REVENUE,
+	COALESCE( RS_inj_rev.NONSPIN_REVENUE,0) as NONSPIN_REVENUE,
+	COALESCE( RS_inj_rev.RAMPUP_REVENUE,0) as RAMPUP_REVENUE,
+	COALESCE( RS_inj_rev.RAMPDOWN_REVENUE,0) as RAMPDOWN_REVENUE,
+    Ed_inj.CAP as CAP,
+	Ed_inj.CASEID as CASE_ID
+FROM
+	ENELYTIX.PSO3_1.Ed_inj AS Ed_inj
+
+INNER JOIN
+(SELECT distinct "//shortname", VOM, UnitType
+ FROM ENELYTIX.PSO3_1.Injector_Info) as Injector_Info
+ ON trim(Ed_inj.inj) = trim(Injector_Info."//shortname")
+ 
+LEFT JOIN
+(
+SELECT
+  INJ,
+  SCN,
+  INT,
+  COALESCE("'RegUp'", 0) AS REGUP,
+  COALESCE("'RegDown'", 0) AS REGDOWN,
+  COALESCE("'Spin'", 0) AS SPIN,
+  COALESCE("'Supp'", 0) AS SUPP,
+  COALESCE("'RampDown'", 0) AS RAMPUP,
+  COALESCE("'RampUp'", 0) AS RAMPDOWN,
+  0 as "NONSPIN"
+  
+FROM (
+
+SELECT *
+FROM (
+  SELECT 
+    INJ,
+    SCN,
+    INT,
+    RSV,
+    MW
+  FROM ENELYTIX.PSO3_1.RS_INJ
+  where CASEID=:case_id
+) 
+PIVOT (
+  MAX(MW) 
+  FOR RSV IN (
+    'RegUp', 
+    'RegDown', 
+    'Spin', 
+    'Supp', 
+    'RampDown', 
+    'RampUp'
+  )
+)
+)
+) as RS_inj
+ON Ed_inj.inj = RS_inj.inj and
+   Ed_inj.int = RS_inj.int and
+   Ed_inj.scn = RS_inj.scn
+   
+LEFT JOIN
+(
+  SELECT
+  INJ,
+  SCN,
+  INT,
+  COALESCE("'RegUp'", 0) AS REGUP_REVENUE,
+  COALESCE("'RegDown'", 0) AS REGDOWN_REVENUE,
+  COALESCE("'Spin'", 0) AS SPIN_REVENUE,
+  COALESCE("'Supp'", 0) AS SUPP_REVENUE,
+  COALESCE("'RampDown'", 0) AS RAMPUP_REVENUE,
+  COALESCE("'RampUp'", 0) AS RAMPDOWN_REVENUE,
+  0 as "NONSPIN_REVENUE"
+  
+FROM (
+
+SELECT *
+FROM (
+  SELECT 
+    INJ,
+    SCN,
+    INT,
+    RSV,
+    REVENUE
+  FROM ENELYTIX.PSO3_1.RS_INJ
+  where CASEID=:case_id
+) 
+PIVOT (
+  MAX(REVENUE) 
+  FOR RSV IN (
+    'RegUp', 
+    'RegDown', 
+    'Spin', 
+    'Supp', 
+    'RampDown', 
+    'RampUp'
+  )
+)
+)
+) 
+as RS_inj_rev
+ON Ed_inj.inj = RS_inj_rev.inj and
+   Ed_inj.int = RS_inj_rev.int and
+   Ed_inj.scn = RS_inj_rev.scn
+   
+LEFT JOIN
+(
+SELECT
+  INJECTOR,
+  scn,
+  int,
+  COALESCE("'Biomass'", 0) AS BIOMASS,
+  COALESCE("'Coal'", 0) AS COAL,
+  COALESCE("'Fuel Oil'", 0) AS FUEL_OIL,
+  COALESCE("'NG'", 0) AS NATURAL_GAS,
+  COALESCE("'Refuse'", 0) AS REFUSE,
+  COALESCE("'Uranium'", 0) AS URANIUM
+  
+FROM (
+  SELECT 
+    *
+  FROM (
+    SELECT 
+      ufu AS INJECTOR,
+      scn,
+      int,
+      fue,
+      FUEL
+    FROM ENELYTIX.PSO3_1.FD_Ufu
+    WHERE CASEID = :case_id
+  )
+  PIVOT (
+    MAX(FUEL)
+    FOR fue IN (
+      'Biomass',
+      'Coal',
+      'Fuel Oil',
+      'NG',
+      'Refuse',
+      'Uranium'
+    )
+  )
+)
+) 
+as FD_Ufu
+ON ED_inj.inj = FD_Ufu.INJECTOR and
+   Ed_inj.int = FD_Ufu.int and
+   Ed_inj.scn = FD_Ufu.scn
+
+LEFT JOIN
+(
+  SELECT
+  INJECTOR,
+  scn,
+  int,
+  COALESCE("'Biomass'", 0) AS BIOMASS_COST,
+  COALESCE("'Coal'", 0) AS COAL_COST,
+  COALESCE("'Fuel Oil'", 0) AS FUEL_OIL_COST,
+  COALESCE("'NG'", 0) AS NATURAL_GAS_COST,
+  COALESCE("'Refuse'", 0) AS REFUSE_COST,
+  COALESCE("'Uranium'", 0) AS URANIUM_COST
+  
+FROM (
+  SELECT 
+    *
+  FROM (
+    SELECT 
+      ufu AS INJECTOR,
+      scn,
+      int,
+      fue,
+      COST,
+    FROM ENELYTIX.PSO3_1.FD_Ufu
+    WHERE CASEID = :case_id
+  )
+  PIVOT (
+    MAX(COST)
+    FOR fue IN (
+      'Biomass',
+      'Coal',
+      'Fuel Oil',
+      'NG',
+      'Refuse',
+      'Uranium'
+    )
+  )
+)
+) as FD_Ufu_cost
+ON ED_inj.inj = FD_Ufu_cost.INJECTOR and
+   Ed_inj.int = FD_Ufu_cost.int and
+   Ed_inj.scn = FD_Ufu_cost.scn
+
+
+LEFT JOIN
+(
+SELECT
+  INJECTOR,
+  scn,
+  int,
+  COALESCE("'CO2'", 0) AS EMS_CO2,
+  COALESCE("'NOX'", 0) AS EMS_NOX,
+  COALESCE("'SO2'", 0) AS EMS_SO2,
+   
+FROM (
+  SELECT 
+    *
+  FROM (
+    SELECT 
+      UTH AS INJECTOR,
+      scn,
+      int,
+      ems,
+      EMISSION
+    FROM ENELYTIX.PSO3_1.EM_UTH
+    WHERE CASEID = :case_id
+  )
+  PIVOT (
+    MAX(EMISSION)
+    FOR ems IN (
+      'CO2',
+      'NOX',
+      'SO2'
+    )
+  )
+)
+) as EM_Uth
+ON ED_inj.inj = EM_Uth.INJECTOR and
+   Ed_inj.int = EM_Uth.int and
+   Ed_inj.scn = EM_Uth.scn
+ 
+LEFT JOIN
+(
+SELECT
+  INJECTOR,
+  scn,
+  int,
+  COALESCE("'CO2'", 0) AS COST_CO2,
+  COALESCE("'NOX'", 0) AS COST_NOX,
+  COALESCE("'SO2'", 0) AS COST_SO2,
+   
+FROM (
+  SELECT 
+    *
+  FROM (
+    SELECT 
+      UTH AS INJECTOR,
+      scn,
+      int,
+      ems,
+      COST
+    FROM ENELYTIX.PSO3_1.EM_UTH
+    WHERE CASEID = :case_id
+  )
+  PIVOT (
+    MAX(COST)
+    FOR ems IN (
+      'CO2',
+      'NOX',
+      'SO2'
+    )
+  )
+)
+) as EM_Uth_Cost
+ON ED_inj.inj = EM_Uth_Cost.INJECTOR and
+   Ed_inj.int = EM_Uth_Cost.int and
+   Ed_inj.scn = EM_Uth_Cost.scn
+ 
+INNER JOIN MER_ffilled_table
+ON ED_inj.inj = MER_ffilled_table.inj
+and Ed_inj.int  = MER_ffilled_table.int
+
+ WHERE
+	Injector_Info.UnitType in ('PV','Wind','PSH','Offshore Wind','Hydro','ST','IC/GT','CC','Coal','NUC','FC','ES') 
+	and substr(Ed_inj.inj,1,6) != 'zzAgg_'
+	and  ED_inj.CASEID= :case_id
+    and ED_inj.scn in ('DA', 'RT');
+    rows_inserted := SQLROWCOUNT;
+
+    RETURN  rows_inserted;
+END;
+$$;
+
+--CALL E_SANDBOX.SILVER.SP_INJ_DISPATCH_BRONZE(32886);
