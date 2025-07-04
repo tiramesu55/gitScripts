@@ -1,4 +1,3 @@
--- ZONE_ID is not needed anymore, because zones are coming from ARA_ID table
 CREATE OR REPLACE PROCEDURE E_SANDBOX.SILVER.SP_INJECTOR_INFO(case_id INTEGER)
 RETURNS INTEGER
 LANGUAGE SQL
@@ -9,16 +8,21 @@ DECLARE
     rows_inserted INTEGER;
     market_id integer;
     scenario string;
-    data_tag_id integer;
+     data_tag_id integer;
 BEGIN
-select data_tag_id INTO data_tag_id from E_SANDBOX.BRONZE.MARKETSCENARIO where CASEID = :case_id ;
+select data_tag_id INTO :data_tag_id from E_SANDBOX.BRONZE.MARKETSCENARIO where CASEID = :case_id Limit 1;
 
-IF :data_tag_id is NULL THEN     RETURN -1; end if;
- 
+IF (:data_tag_id IS NULL) THEN
+    RETURN -1;
+END IF;
 --find the market for case
-  SELECT MARKETID, SCENARIO  INTO :market_id, :scenario FROM E_SANDBOX.BRONZE.MARKETSCENARIO   WHERE CASEID = :case_id ;
-   
-   IF :scenario IS NULL THEN RETURN -2 end if;
+  SELECT MARKETID, SCENARIO
+  INTO :market_id, :scenario
+  FROM E_SANDBOX.BRONZE.MARKETSCENARIO 
+  WHERE CASEID = :CASE_ID   LIMIT 1;
+   IF (:scenario IS NULL) THEN 
+      RETURN -2 ;
+    end if;
   
     INSERT INTO E_SANDBOX.SILVER.INJ_INFO ( 
         INJECTOR_ID, PLANT_ID, ZONE_ID, PLANT_NAME, INJECTOR, LONGNAME, ZONE,
@@ -27,7 +31,6 @@ IF :data_tag_id is NULL THEN     RETURN -1; end if;
         PRIMARY_FUEL_LOCATION, SECONDARY_FUEL_LOCATION, NON_FUEL_VOM,SNL_UNIT_ID,
         SNL_PLANT_ID, COUNTY, STATE, LATITUDE, LONGITUDE,
         MARKETID, ONLINEDATE,RETIREDATE, CAPEX_BUILT,CAPEX_RETIRED,SHORTNAME
-        --, DATA_TAG_ID
     )
     --new records which are not in inj_info
     WITH NEW_RECORDS AS (
@@ -57,9 +60,7 @@ IF :data_tag_id is NULL THEN     RETURN -1; end if;
             B.LATITUDE,
             B.LONGITUDE,
             :market_id AS MARKETID,
-            B."//SHORTNAME" AS SHORTNAME
-            --, v_data_tag_id   --injectors are unique within data tag
-            
+            B."//SHORTNAME" AS SHORTNAME,
          
            CASE
                 WHEN SUBSTR( B."//SHORTNAME", 1, 3) = 'CX_'   ---it is _CX injector
@@ -124,7 +125,9 @@ IF :data_tag_id is NULL THEN     RETURN -1; end if;
         FROM NEW_RECORDS NR
         INNER JOIN E_SANDBOX.MODEL_DATA.ZONE_ID ZIM ON NR.ZONE = ZIM.ZONE
         INNER JOIN E_SANDBOX.MODEL_DATA.PLANT_ID PIM ON NR.PLANT_NAME = PIM.PLANT;
-
+--   )
+--   SELECT *
+--   FROM FINAL_INSERT;
     rows_inserted := SQLROWCOUNT;
     RETURN rows_inserted;
 END;

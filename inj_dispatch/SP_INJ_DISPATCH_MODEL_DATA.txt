@@ -12,13 +12,19 @@ DECLARE
 BEGIN
 -- find data_tag_id by case_id
    select data_tag_id into :V_DATA_TAG_ID from E_SANDBOX.BRONZE.MARKETSCENARIO where CASEID = :CASE_ID limit 1;
-
+  IF (:data_tag_id IS NULL) THEN
+    RETURN -1;
+  end if;  
  -- Assign values from query into variables
   SELECT LOCAL_TZ, behind_utc
     INTO  :v_local_tz,:v_behind_utc
     FROM E_SANDBOX.SILVER.DATA_TAG_KEY
    WHERE DATA_TAG_ID = :DATA_TAG_ID 
    LIMIT 1;
+
+   IF (:scenario IS NULL) THEN 
+      RETURN -2 ;
+    end if;
 
 INSERT INTO E_SANDBOX.MODEL_DATA.INJ_DISPATCH (
     DATA_TAG_ID,
