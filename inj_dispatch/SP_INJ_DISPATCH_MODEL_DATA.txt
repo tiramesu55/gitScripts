@@ -8,21 +8,21 @@ DECLARE
   v_local_tz VARCHAR;
   v_behind_utc VARCHAR;
   rows_inserted INTEGER;
-  V_DATA_TAG_ID integer;
+  v_data_tag_id integer;
 BEGIN
 -- find data_tag_id by case_id
-   select data_tag_id into :V_DATA_TAG_ID from E_SANDBOX.BRONZE.MARKETSCENARIO where CASEID = :CASE_ID limit 1;
-  IF (:data_tag_id IS NULL) THEN
+   select data_tag_id into :v_data_tag_id from E_SANDBOX.BRONZE.MARKETSCENARIO where CASEID = :CASE_ID limit 1;
+  IF (:v_data_tag_id IS NULL) THEN
     RETURN -1;
   end if;  
  -- Assign values from query into variables
   SELECT LOCAL_TZ, behind_utc
     INTO  :v_local_tz,:v_behind_utc
     FROM E_SANDBOX.SILVER.DATA_TAG_KEY
-   WHERE DATA_TAG_ID = :DATA_TAG_ID 
+   WHERE DATA_TAG_ID = :v_data_tag_id 
    LIMIT 1;
 
-   IF (:scenario IS NULL) THEN 
+   IF (:v_behind_utc IS NULL) THEN 
       RETURN -2 ;
     end if;
 
@@ -87,7 +87,7 @@ INSERT INTO E_SANDBOX.MODEL_DATA.INJ_DISPATCH (
 )
 
 SELECT 
-    :data_tag_id ,
+    :v_data_tag_id ,
     src.CYCLE,
     ref.INJECTOR_ID,
     DATEADD(HOUR, :v_behind_utc, TRY_TO_TIMESTAMP(src.DT_ENELYTIX, 'YYYY.MM.DD HH24:MI')) AS DT_UTC,
@@ -154,4 +154,4 @@ WHERE src.CASE_ID = :CASE_ID ;
 END;
 $$;
 
---CALL  E_SANDBOX.SILVER.SP_INJ_DISPATCH_MODEL_DATA( 32886, 4 );  
+--CALL  E_SANDBOX.SILVER.SP_INJ_DISPATCH_MODEL_DATA( 30295);  
