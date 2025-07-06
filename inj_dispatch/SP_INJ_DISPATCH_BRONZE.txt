@@ -226,7 +226,7 @@ FROM
 
 INNER JOIN
 (SELECT distinct "//shortname", VOM, UnitType
- FROM ENELYTIX.PSO3_1.Injector_Info) as Injector_Info
+ FROM ENELYTIX.PSO3_1.Injector_Info  Where CASEID = :case_id ) as Injector_Info
  ON trim(Ed_inj.inj) = trim(Injector_Info."//shortname")
  
 LEFT JOIN
