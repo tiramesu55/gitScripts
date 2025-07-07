@@ -1,3 +1,5 @@
+
+
 CREATE OR REPLACE PROCEDURE E_SANDBOX.SILVER.SP_NODEHUB_MODEL_DATA(  DATA_TAG_ID INTEGER)
 RETURNS INTEGER
 LANGUAGE SQL
@@ -6,13 +8,13 @@ AS
 $$
 DECLARE
   v_local_tz VARCHAR;
-  v_date VARCHAR;
+  v_behind_utc int;
   rows_inserted INTEGER;
 BEGIN
  -- Assign values from query into variables
-  SELECT  LOCAL_TZ
-    INTO  :v_local_tz
-    FROM E_SANDBOX.MODEL_DATA.DATA_TAG_KEY
+  SELECT LOCAL_TZ, behind_utc
+    INTO  :v_local_tz,:v_behind_utc
+    FROM E_SANDBOX.SILVER.DATA_TAG_KEY
    WHERE DATA_TAG_ID = :DATA_TAG_ID 
    LIMIT 1;
 
@@ -82,9 +84,9 @@ Select
     PC_Nd.scn as CYCLE,
     PC_Nd.nd as LOCATION,
     'Hub' as LOCATION_TYPE,
-    DATEADD(HOUR, 6, TRY_TO_TIMESTAMP(dt, 'YYYY.MM.DD HH24:MI')) AS DT_UTC,
+    DATEADD(HOUR, :v_behind_utc, TRY_TO_TIMESTAMP(dt, 'YYYY.MM.DD HH24:MI')) AS DT_UTC,
     
-    TRY_TO_TIMESTAMP(dt, 'YYYY.MM.DD HH24:MI') AS DT_LOCAL, 
+    CONVERT_TIMEZONE('UTC', :v_local_tz, DATEADD(HOUR, :v_behind_utc, TRY_TO_TIMESTAMP(dt, 'YYYY.MM.DD HH24:MI'))) as DT_LOCAL,
     PC_Nd.Period as PERIOD,
     PC_Nd.LMP,
 	'0' as LMP_ENERGY,
@@ -105,5 +107,5 @@ RETURN  rows_inserted;
 END;
 $$;
 
-
---CALL E_SANDBOX.SILVER.SP_NODEHUB_MODEL_DATA( 1 );
+--delete FROM E_SANDBOX.MODEL_DATA.NODE_HUB_DISPATCH where data_tag_id = 5
+--CALL E_SANDBOX.SILVER.SP_NODEHUB_MODEL_DATA( 5 );

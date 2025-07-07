@@ -6,7 +6,7 @@ AS
 $$
 DECLARE
   v_local_tz VARCHAR;
-  v_behind_utc VARCHAR;
+  v_behind_utc int;
   rows_inserted INTEGER;
 BEGIN
  -- Assign values from query into variables
