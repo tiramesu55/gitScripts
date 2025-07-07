@@ -1,0 +1,143 @@
+CREATE OR REPLACE PROCEDURE E_SANDBOX.SILVER.SP_ZONEDISPATCH_MODEL_DATA( DATA_TAG_ID INTEGER)
+RETURNS INTEGER
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+  v_local_tz VARCHAR;
+  v_behind_utc VARCHAR;
+  rows_inserted INTEGER;
+BEGIN
+ -- Assign values from query into variables
+  SELECT LOCAL_TZ, behind_utc
+    INTO  :v_local_tz,:v_behind_utc
+    FROM E_SANDBOX.SILVER.DATA_TAG_KEY
+   WHERE DATA_TAG_ID = :DATA_TAG_ID 
+   LIMIT 1;
+INSERT INTO E_SANDBOX.MODEL_DATA.ZONAL_DISPATCH
+with 
+LMP_table_ara as (
+SELECT int,
+       ara,
+       SUM(CASE WHEN scn = 'RT' THEN LoadPrice END) AS "RT",
+        SUM(CASE WHEN scn = 'RT_MER+' THEN LoadPrice END) AS "RT_MER+",
+        SUM(CASE WHEN scn = 'RT_MER-' THEN LoadPrice END) AS "RT_MER-"
+FROM ENELYTIX.PSO3_1.ED_ARA
+WHERE CaseId in (SELECT caseID FROM E_SANDBOX.BRONZE.MARKETSCENARIO WHERE DATA_TAG_ID = :DATA_TAG_ID )
+GROUP BY int, ara
+Having ara != '0'
+)
+,
+MER_table_ara as(
+Select int
+		,ara
+		,"MER_RT_MER+"
+		,"MER_RT_MER-"
+		,"MER_RT_MER+-"
+		,case
+			when "MER_min_abs" > 10 then null
+			when abs("MER_RT_MER+") <= 10 and abs("MER_RT_MER+") = "MER_min_abs" then "MER_RT_MER+"
+			when abs("MER_RT_MER-") <= 10 and abs("MER_RT_MER-") = "MER_min_abs" then "MER_RT_MER-"
+			when abs("MER_RT_MER+-") <= 10 and abs("MER_RT_MER+-") = "MER_min_abs" then "MER_RT_MER+-"
+		end
+		as "MER"
+From (
+Select int 
+        ,ara
+		,("RT_MER+" - "RT")/0.01 as "MER_RT_MER+"
+		,("RT_MER-" - "RT")/(-0.01) as "MER_RT_MER-"
+		,("RT_MER+" - "RT_MER-")/(0.01*2) as "MER_RT_MER+-"
+		,least(abs(("RT_MER+" - "RT")/0.01), abs(("RT_MER-" - "RT")/0.01), abs(("RT_MER+" - "RT_MER-")/(0.01*2))) as "MER_min_abs"
+From LMP_table_ara) as t1_ara
+)
+,
+MER_ffilled_table_ara as (
+Select 
+        ara as LOCATION
+	   ,int
+       ,COALESCE (max("MER") over(partition by ara, grouper), 0.5) as "MER_ffill"
+From (
+Select  int
+        ,ara
+        ,MER
+        ,count("MER") over(partition by ara order by int) as "grouper"
+From MER_table_ara) as t2_ara
+)
+
+SELECT
+    :data_tag_id,
+    ED_ara.scn as CYCLE,
+    ZONES_ID.ZONE_ID AS ZONE_ID,
+    DATEADD(HOUR, :v_behind_utc, TRY_TO_TIMESTAMP(dt, 'YYYY.MM.DD HH24:MI')) AS DT_UTC,
+    
+    TRY_TO_TIMESTAMP(dt, 'YYYY.MM.DD HH24:MI') AS DT_LOCAL, 
+    ED_ara.Period as PERIOD,
+    ED_ara.LoadPrice as LMP,
+	'0' as LMP_ENERGY,
+	'0' as LMP_CONGESTION,
+	'0' as LMP_LOSS,
+	MER_ffilled_table_ara.MER_ffill as MER,
+    Ed_ara.Load as LOAD,
+	RS_Ara.REGUP_PRICE,
+	RS_Ara.REGDOWN_PRICE,
+	RS_Ara.SPIN_PRICE,
+	RS_Ara.SUPP_PRICE,
+	RS_Ara.NONSPIN_PRICE,
+	RS_Ara.RAMPUP_PRICE,
+	RS_Ara.RAMPDOWN_PRICE
+	
+FROM ENELYTIX.PSO3_1.ED_ARA AS ED_Ara
+INNER JOIN ( SELECT  ZONE_ID, ZONE FROM E_SANDBOX.MODEL_DATA.ZONE_ID where market_id = 1 ) as  ZONES_ID on ZONES_ID.ZONE = ED_ara.ara  
+
+LEFT JOIN MER_ffilled_table_ara
+ON ED_Ara.int = MER_ffilled_table_ara.int
+and ED_Ara.ara = MER_ffilled_table_ara.LOCATION
+
+LEFT JOIN 
+(
+SELECT caseid,
+       ara,
+       int,
+	   scn,
+	    COALESCE("'RegUp'", 0) as REGUP_PRICE,
+	   COALESCE("'RegDown'", 0) as REGDOWN_PRICE,
+	    COALESCE("'Spin'", 0) as SPIN_PRICE,
+	    COALESCE("'Supp'", 0) as SUPP_PRICE,
+	   '0' as NONSPIN_PRICE,
+	     COALESCE("'RampDown'", 0) as RAMPUP_PRICE,
+	     COALESCE("'RampUp'", 0) as RAMPDOWN_PRICE,
+	   '0' as OTHER_RESERVE_1_PRICE,
+	   '0' as OTHER_RESERVE_2_PRICE,
+	   '0' as OTHER_RESERVE_3_PRICE
+
+FROM
+(
+ SELECT caseid, ara, scn, int,rsv,Price
+ FROM ENELYTIX.PSO3_1.RS_ARA 
+ WHERE CaseId in (SELECT caseID FROM E_SANDBOX.BRONZE.MARKETSCENARIO WHERE DATA_TAG_ID = :DATA_TAG_ID )
+ )
+ PIVOT (
+  MAX(Price) FOR rsv IN ('RegUp', 'RegDown', 'Spin','Supp','RampDown', 'RampUp' )
+)
+)
+as RS_Ara
+ON ED_Ara.ara = RS_Ara.ara and
+   ED_Ara.scn = RS_Ara.scn and
+   ED_Ara.int = RS_Ara.int
+   and ED_Ara.caseid = RS_Ara.caseid	
+WHERE ED_Ara.scn in ('DA','RT') and ED_Ara.CaseId in (SELECT caseID FROM E_SANDBOX.BRONZE.MARKETSCENARIO WHERE DATA_TAG_ID = :DATA_TAG_ID )
+and ED_Ara.ara != '0';   -- for EQ scenario ara = 0, so no data
+rows_inserted := SQLROWCOUNT;
+
+-- set DT_LOCAL
+UPDATE E_SANDBOX.MODEL_DATA.ZONAL_DISPATCH
+SET DT_LOCAL = CONVERT_TIMEZONE('UTC', :v_local_tz, DT_UTC)
+where DATA_TAG_ID = :DATA_TAG_ID ;
+   
+RETURN  rows_inserted;
+END;
+$$;
+
+--delete from E_SANDBOX.MODEL_DATA.ZONAL_DISPATCH  where data_tag_id=5    -- 6573600 
+--CALL E_SANDBOX.SILVER.SP_ZONEDISPATCH_MODEL_DATA( 5);
