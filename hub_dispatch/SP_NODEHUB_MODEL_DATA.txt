@@ -1,0 +1,109 @@
+CREATE OR REPLACE PROCEDURE E_SANDBOX.SILVER.SP_NODEHUB_MODEL_DATA(  DATA_TAG_ID INTEGER)
+RETURNS INTEGER
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+  v_local_tz VARCHAR;
+  v_date VARCHAR;
+  rows_inserted INTEGER;
+BEGIN
+ -- Assign values from query into variables
+  SELECT  LOCAL_TZ
+    INTO  :v_local_tz
+    FROM E_SANDBOX.MODEL_DATA.DATA_TAG_KEY
+   WHERE DATA_TAG_ID = :DATA_TAG_ID 
+   LIMIT 1;
+
+INSERT INTO E_SANDBOX.MODEL_DATA.NODE_HUB_DISPATCH
+with 
+LMP_table as (
+SELECT
+       int,
+       nd,
+        SUM(CASE WHEN scn = 'RT' THEN LMP END
+            )AS "RT",
+        SUM(CASE WHEN scn = 'RT_MER+' THEN LMP END
+			)AS "RT_MER+",
+        SUM(CASE WHEN scn = 'RT_MER-' THEN LMP END
+			)AS "RT_MER-"
+FROM 
+	ENELYTIX.PSO3_1.PC_ND 
+Where CaseId in  ( SELECT caseID FROM E_SANDBOX.BRONZE.MARKETSCENARIO WHERE DATA_TAG_ID = :DATA_TAG_ID  )  AND PC_Nd.ND in ('SPP-South-Hub', 'SPP-North-Hub')
+GROUP BY
+       int,
+       nd
+)
+,
+MER_table as(
+Select int,
+	   nd,
+	   "MER_RT_MER+",
+	   "MER_RT_MER-",
+	   "MER_RT_MER+-",
+		 case
+			when "MER_min_abs" > 10 then null
+			when abs("MER_RT_MER+") <= 10 and abs("MER_RT_MER+") = "MER_min_abs" then "MER_RT_MER+"
+			when abs("MER_RT_MER-") <= 10 and abs("MER_RT_MER-") = "MER_min_abs" then "MER_RT_MER-"
+			when abs("MER_RT_MER+-") <= 10 and abs("MER_RT_MER+-") = "MER_min_abs" then "MER_RT_MER+-"
+		end
+	   as "MER"
+From (
+	Select
+        int,
+        nd,
+	    ("RT_MER+" - "RT")/0.01 as "MER_RT_MER+",
+	    ("RT_MER-" - "RT")/(-0.01) as "MER_RT_MER-",
+		("RT_MER+" - "RT_MER-")/(0.01*2) as "MER_RT_MER+-",
+		least(abs(("RT_MER+" - "RT")/0.01),
+			  abs(("RT_MER-" - "RT")/0.01),
+			  abs(("RT_MER+" - "RT_MER-")/(0.01*2)))
+		as "MER_min_abs"
+From LMP_table) as t1
+)
+,
+MER_ffilled_table as (
+Select 
+	   nd as LOCATION,
+	   int,
+       COALESCE (max("MER") over(partition by nd, grouper), 0.5) as "MER_ffill"
+From (
+	Select  
+        int,
+        nd,
+        MER,
+        count("MER") over(partition by nd order by int) as "grouper"
+From MER_table ) as t2
+)
+
+Select
+    :data_tag_id,
+    PC_Nd.scn as CYCLE,
+    PC_Nd.nd as LOCATION,
+    'Hub' as LOCATION_TYPE,
+    DATEADD(HOUR, 6, TRY_TO_TIMESTAMP(dt, 'YYYY.MM.DD HH24:MI')) AS DT_UTC,
+    
+    TRY_TO_TIMESTAMP(dt, 'YYYY.MM.DD HH24:MI') AS DT_LOCAL, 
+    PC_Nd.Period as PERIOD,
+    PC_Nd.LMP,
+	'0' as LMP_ENERGY,
+	'0' as LMP_CONGESTION,
+	'0' as LMP_LOSS,
+    MER_ffilled_table.MER_ffill as MER
+
+From 
+    ENELYTIX.PSO3_1.PC_Nd AS PC_Nd
+	
+LEFT JOIN MER_ffilled_table
+ON PC_Nd.int = MER_ffilled_table.int
+and PC_Nd.nd = MER_ffilled_table.LOCATION	
+WHERE PC_Nd.scn in ('DA', 'RT') and CaseId in (SELECT caseID FROM E_SANDBOX.BRONZE.MARKETSCENARIO WHERE DATA_TAG_ID = :DATA_TAG_ID  ) AND PC_Nd.ND in ('SPP-South-Hub', 'SPP-North-Hub') ;
+
+rows_inserted := SQLROWCOUNT;  
+RETURN  rows_inserted;
+END;
+$$;
+
+
+--CALL E_SANDBOX.SILVER.SP_NODEHUB_MODEL_DATA( 1 );
