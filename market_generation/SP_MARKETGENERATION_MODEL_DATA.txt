@@ -27,9 +27,10 @@ DECLARE
     v_local_tz VARCHAR;
     v_behind_utc VARCHAR;
     rows_inserted INTEGER;
+    market_id integer;
 BEGIN
-SELECT LOCAL_TZ, behind_utc
-    INTO  :v_local_tz,:v_behind_utc
+SELECT LOCAL_TZ, behind_utc,market_id
+    INTO  :v_local_tz,:v_behind_utc, :market_id
     FROM E_SANDBOX.SILVER.DATA_TAG_KEY
     WHERE DATA_TAG_ID =  :DATA_TAG_ID 
     LIMIT 1;
@@ -52,7 +53,7 @@ SELECT
         END AS CAPACITY_FACTOR
      
 FROM E_SANDBOX.BRONZE.MARKET_GENERATION_SASHA src
-INNER JOIN ( SELECT  ZONE_ID, ZONE FROM E_SANDBOX.MODEL_DATA.ZONE_ID where MARKET_ID = 1  ) as ref   
+INNER JOIN ( SELECT  ZONE_ID, ZONE FROM E_SANDBOX.MODEL_DATA.ZONE_ID where MARKET_ID = :market_id  ) as ref   
 ON src.ZONE = ref.ZONE
 WHERE src.DATA_TAG_ID  = :DATA_TAG_ID;
 

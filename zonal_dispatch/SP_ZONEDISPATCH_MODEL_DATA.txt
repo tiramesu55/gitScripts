@@ -1,3 +1,5 @@
+--truncate table E_SANDBOX.MODEL_DATA.ZONAL_DISPATCH_COMPARE
+
 CREATE OR REPLACE PROCEDURE E_SANDBOX.SILVER.SP_ZONEDISPATCH_MODEL_DATA( DATA_TAG_ID INTEGER)
 RETURNS INTEGER
 LANGUAGE SQL
@@ -6,12 +8,13 @@ AS
 $$
 DECLARE
   v_local_tz VARCHAR;
-  v_behind_utc int;
+  v_behind_utc VARCHAR;
   rows_inserted INTEGER;
+  market_id integer;
 BEGIN
  -- Assign values from query into variables
-  SELECT LOCAL_TZ, behind_utc
-    INTO  :v_local_tz,:v_behind_utc
+  SELECT LOCAL_TZ, behind_utc, market_id
+    INTO  :v_local_tz,:v_behind_utc, :market_id
     FROM E_SANDBOX.SILVER.DATA_TAG_KEY
    WHERE DATA_TAG_ID = :DATA_TAG_ID 
    LIMIT 1;
@@ -88,7 +91,7 @@ SELECT
 	RS_Ara.RAMPDOWN_PRICE
 	
 FROM ENELYTIX.PSO3_1.ED_ARA AS ED_Ara
-INNER JOIN ( SELECT  ZONE_ID, ZONE FROM E_SANDBOX.MODEL_DATA.ZONE_ID where market_id = 1 ) as  ZONES_ID on ZONES_ID.ZONE = ED_ara.ara  
+INNER JOIN ( SELECT  ZONE_ID, ZONE FROM E_SANDBOX.MODEL_DATA.ZONE_ID where market_id = 1 ) as  ZONES_ID on ZONES_ID.ZONE = ED_ara.ara  and ZONE_ID.MARKET_ID = :market_id
 
 LEFT JOIN MER_ffilled_table_ara
 ON ED_Ara.int = MER_ffilled_table_ara.int
@@ -141,3 +144,4 @@ $$;
 
 --delete from E_SANDBOX.MODEL_DATA.ZONAL_DISPATCH  where data_tag_id=5    -- 6573600 
 --CALL E_SANDBOX.SILVER.SP_ZONEDISPATCH_MODEL_DATA( 5);
+

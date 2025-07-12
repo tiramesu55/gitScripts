@@ -9,6 +9,7 @@ DECLARE
   v_behind_utc VARCHAR;
   rows_inserted INTEGER;
   v_data_tag_id integer;
+  market_id integer;
 BEGIN
 -- find data_tag_id by case_id
    select data_tag_id into :v_data_tag_id from E_SANDBOX.BRONZE.MARKETSCENARIO where CASEID = :CASE_ID limit 1;
@@ -16,8 +17,8 @@ BEGIN
     RETURN -1;
   end if;  
  -- Assign values from query into variables
-  SELECT LOCAL_TZ, behind_utc
-    INTO  :v_local_tz,:v_behind_utc
+  SELECT LOCAL_TZ, behind_utc, market_id
+    INTO  :v_local_tz,:v_behind_utc, :market_id
     FROM E_SANDBOX.SILVER.DATA_TAG_KEY
    WHERE DATA_TAG_ID = :v_data_tag_id 
    LIMIT 1;
@@ -146,7 +147,7 @@ SELECT
     src.CASE_ID
 FROM E_SANDBOX.BRONZE.INJ_DISPATCH src
 INNER JOIN E_SANDBOX.SILVER.INJ_INFO ref
-  ON src.INJECTOR = ref.INJECTOR
+  ON src.INJECTOR = ref.INJECTOR AND ref.MARKETID=:market_id
 WHERE src.CASE_ID = :CASE_ID ;
 
  rows_inserted := SQLROWCOUNT;
