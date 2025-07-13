@@ -1,0 +1,62 @@
+-- create or replace TABLE E_SANDBOX.MODEL_DATA.MARKET_CAPACITY_COMPARE (
+-- 	DATA_TAG_ID NUMBER(38,0) NOT NULL,
+-- 	ZONE_ID NUMBER(38,0) NOT NULL,
+-- 	DATE DATE NOT NULL,
+-- 	UNIT_TYPE VARCHAR(50) NOT NULL,
+-- 	CAPACITY FLOAT
+-- );
+
+CREATE OR REPLACE PROCEDURE E_SANDBOX.SILVER.SP_MARKETCAPACITY_MODEL_DATA( DATA_TAG_ID INTEGER)
+RETURNS INTEGER
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+
+DECLARE
+  v_local_tz VARCHAR;
+  market_id integer;
+  rows_inserted INTEGER;
+BEGIN
+ -- -- Assign values from query into variables
+  SELECT  market_id
+    INTO  :market_id
+    FROM E_SANDBOX.SILVER.DATA_TAG_KEY
+   WHERE DATA_TAG_ID = :DATA_TAG_ID 
+   LIMIT 1;
+   
+INSERT INTO E_SANDBOX.MODEL_DATA.MARKET_CAPACITY (
+    DATA_TAG_ID,
+    ZONE_ID,
+    DATE,
+    UNIT_TYPE,
+    CAPACITY
+
+)
+WITH AGG_CAP AS(
+SELECT
+    YEAR,
+    EnergyArea as ZONE,
+    UNITTYPE ,
+    SUM(WinterCap) AS CAPACITY
+FROM  ENELYTIX.PSO3_1.INJECTOR_INFO ii 
+INNER JOIN  E_SANDBOX.BRONZE.MARKETSCENARIO sc on ii.caseID = sc.CASEID and sc.DATA_TAG_ID = :DATA_TAG_ID   --only cases in scenario
+GROUP BY sc.YEAR,EnergyArea, UNITTYPE 
+)
+--add Zone ID.  I coild've done with one query, but it loos simpler with CTE
+SELECT 
+    :data_tag_id,
+    ref.ZONE_ID,
+    TO_DATE(YEAR || '-01-01') AS DATE,  
+    s.UNITTYPE,
+    s.CAPACITY
+FROM AGG_CAP AS s
+INNER JOIN ( SELECT ZONE_ID, ZONE FROM E_SANDBOX.MODEL_DATA.ZONE_ID WHERE MARKET_ID = :market_id ) as ref  -- need to replace hardcoded 1 with market ID from parameters
+ON  s.ZONE = ref.ZONE;
+ 
+   rows_inserted := SQLROWCOUNT;
+   RETURN  rows_inserted;
+END;
+$$;
+
+--CALL E_SANDBOX.SILVER.SP_MARKETCAPACITY_MODEL_DATA( 7 );
